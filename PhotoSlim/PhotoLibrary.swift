@@ -5,8 +5,11 @@ import Photos
 @MainActor
 final class PhotoLibrary {
 
-    /// Photos below this aren't worth compressing.
-    static let sizeThreshold: Int64 = 5 * 1_024 * 1_024
+    static let minThreshold: Int64 = 500 * 1_024          // 500 KB
+    static let maxThreshold: Int64 = 50 * 1_024 * 1_024   // 50 MB
+    static let defaultThreshold: Int64 = 5 * 1_024 * 1_024
+
+    var threshold: Int64 = PhotoLibrary.defaultThreshold
 
     var items: [PhotoItem] = []
     var scanProgress: Double = 0
@@ -50,7 +53,7 @@ final class PhotoLibrary {
                 freshSizes[asset.localIdentifier] = size
             }
 
-            if size >= Self.sizeThreshold {
+            if size >= threshold {
                 scanned.append(PhotoItem(asset: asset, byteSize: size))
             }
 

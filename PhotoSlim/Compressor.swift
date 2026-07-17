@@ -2,8 +2,33 @@ import Foundation
 import Photos
 import ImageIO
 import UniformTypeIdentifiers
+import UIKit
 
 enum Compressor {
+
+    /// Decodes image bytes to a UIImage no larger than `maxPixel` on its long edge,
+    /// downscaling during decode (ImageIO) rather than loading the full bitmap. Used for
+    /// the compare preview so a 48MP photo doesn't become a full-res UIImage in memory.
+    static func thumbnail(from data: Data, maxPixel: Int) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return thumbnail(from: source, maxPixel: maxPixel)
+    }
+
+    static func thumbnail(fromFile url: URL, maxPixel: Int) -> UIImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return thumbnail(from: source, maxPixel: maxPixel)
+    }
+
+    private static func thumbnail(from source: CGImageSource, maxPixel: Int) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,   // honor EXIF orientation
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        return UIImage(cgImage: cg)
+    }
 
     // MARK: - Compress
 
@@ -20,37 +45,70 @@ enum Compressor {
             throw CompressError.decodeFailed
         }
 
-        let out = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(
-            out, UTType.heic.identifier as CFString, 1, nil
-        ) else {
-            throw CompressError.encodeFailed
+        // Some already-compressed sources don't shrink at the chosen quality (a HEIC
+        // re-encode at 0.8 can even grow). Step the quality down until the output is
+        // genuinely smaller, so "High" still yields a real saving instead of an error.
+        let originalSize = Int64(data.count)
+        let qualities = [preset.quality, 0.6, 0.4, 0.3].filter { $0 <= preset.quality }
+
+        var smallest: (data: NSData, size: Int64, quality: Double)?
+        for quality in qualities {
+            guard let encoded = encodeHEIC(source, quality: quality) else { continue }
+            let size = Int64(encoded.length)
+            if size < (smallest?.size ?? .max) {
+                smallest = (encoded, size, quality)
+            }
+            if size < originalSize { break }  // good enough — stop stepping down
         }
 
-        // AddImageFromSource carries EXIF/GPS/TIFF/orientation across verbatim.
-        // The options dict only layers the compression quality on top.
-        let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: preset.quality]
-        CGImageDestinationAddImageFromSource(dest, source, 0, options as CFDictionary)
+        guard let smallest, smallest.size < originalSize else {
+            // Even the lowest quality couldn't beat the original — truly incompressible.
+            throw CompressError.noGain(decoded: originalSize, compressed: smallest?.size ?? originalSize)
+        }
 
-        guard CGImageDestinationFinalize(dest) else { throw CompressError.encodeFailed }
-
-        let compressedSize = Int64(out.length)
-        // Compare gain against the actual decoded bytes; if the encode didn't shrink
-        // those, it won't shrink the file either.
-        guard compressedSize < Int64(data.count) else { throw CompressError.noGain }
-
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("heic")
-        try out.write(to: url, options: .atomic)
-
+        let url = try writeTemp(smallest.data)
         return CompressedResult(
             original: asset,
             originalData: data,
             originalSize: max(listedSize, Int64(data.count)),
             compressedURL: url,
-            compressedSize: compressedSize
+            compressedSize: smallest.size,
+            quality: smallest.quality
         )
+    }
+
+    /// Re-encodes already-loaded original bytes at a specific quality and writes a fresh
+    /// temp file. Used by the compare view's live quality slider — no PHAsset round-trip.
+    /// Returns nil if decode/encode fails. Does NOT enforce a size reduction: the slider
+    /// shows the honest result even when a high quality grows the file.
+    static func reencode(originalData: Data, quality: Double) -> (url: URL, size: Int64)? {
+        guard let source = CGImageSourceCreateWithData(originalData as CFData, nil),
+              CGImageSourceGetCount(source) > 0,
+              let encoded = encodeHEIC(source, quality: quality),
+              let url = try? writeTemp(encoded) else { return nil }
+        return (url, Int64(encoded.length))
+    }
+
+    /// Writes HEIC bytes to a fresh unique temp file and returns its URL.
+    private static func writeTemp(_ data: NSData) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("heic")
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
+    /// Encodes the source image to HEIC at the given quality, preserving metadata.
+    /// AddImageFromSource carries EXIF/GPS/TIFF/orientation across verbatim.
+    private static func encodeHEIC(_ source: CGImageSource, quality: Double) -> NSData? {
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            out, UTType.heic.identifier as CFString, 1, nil
+        ) else { return nil }
+        let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+        CGImageDestinationAddImageFromSource(dest, source, 0, options as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out
     }
 
     private static func originalData(for asset: PHAsset) async throws -> Data {

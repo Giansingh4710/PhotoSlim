@@ -6,11 +6,14 @@ enum QualityPreset: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Encoder quality. Lower values shrink harder. Tuned for already-HEIC iPhone
+    /// photos, where a high value barely compresses — these give a visible saving
+    /// while staying visually clean.
     var quality: Double {
         switch self {
-        case .high: 0.8
-        case .medium: 0.6
-        case .low: 0.4
+        case .high: 0.5
+        case .medium: 0.4
+        case .low: 0.3
         }
     }
 
@@ -39,8 +42,10 @@ struct CompressedResult: Identifiable {
     /// source pixels we measured against, not a separately-fetched thumbnail.
     let originalData: Data
     let originalSize: Int64
-    let compressedURL: URL
-    let compressedSize: Int64
+    /// Mutable: the compare view's quality slider re-encodes to a new temp file.
+    var compressedURL: URL
+    var compressedSize: Int64
+    var quality: Double
 
     var id: String { original.localIdentifier }
     var savedBytes: Int64 { originalSize - compressedSize }
@@ -54,7 +59,7 @@ enum CompressError: LocalizedError {
     case decodeFailed
     case encodeFailed
     case saveFailed
-    case noGain
+    case noGain(decoded: Int64, compressed: Int64)
 
     var errorDescription: String? {
         switch self {
@@ -62,7 +67,9 @@ enum CompressError: LocalizedError {
         case .decodeFailed: "Couldn't read the photo data."
         case .encodeFailed: "Couldn't write the compressed photo."
         case .saveFailed: "Couldn't save the compressed photo to your library."
-        case .noGain: "Already small — compressing wouldn't save space."
+        case let .noGain(decoded, compressed):
+            "No gain: decoded \(formatBytes(decoded)) → \(formatBytes(compressed)). "
+            + "The full-resolution original may be in iCloud, not on this device."
         }
     }
 }

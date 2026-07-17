@@ -4,7 +4,6 @@ import Photos
 struct PhotoListView: View {
     @State private var library = PhotoLibrary()
     @State private var selection = Set<String>()
-    @State private var preset: QualityPreset = .high
     @State private var results: [CompressedResult] = []
     @State private var isCompressing = false
     @State private var compressProgress = ""
@@ -39,16 +38,14 @@ struct PhotoListView: View {
             .task { await library.requestAccess() }
             // Drop selected IDs for photos a re-scan removed, so we never target stale items.
             .onChange(of: library.items) { _, items in
-                let live = Set(items.map(\.id))
-                selection = selection.intersection(live)
+                guard !selection.isEmpty else { return }  // nothing to prune
+                selection = selection.intersection(items.map(\.id))
             }
         }
         .sheet(isPresented: sheetBinding) {
-            CompareView(results: results) { deleted in
+            CompareView(results: $results) { deleted in
                 if deleted { library.remove(ids: Set(results.map(\.id))) }
-                Compressor.discard(results)  // temp .heic files, no longer needed
-                results = []
-                selection = []
+                discardResults()  // discards the *current* (tuned) temp files, then clears
             }
         }
         .alert("Couldn't compress", isPresented: alertBinding) {
@@ -73,10 +70,12 @@ struct PhotoListView: View {
             ContentUnavailableView {
                 Label("Nothing to compress", systemImage: "checkmark.circle")
             } description: {
-                Text("No photos larger than \(formatBytes(PhotoLibrary.sizeThreshold)).")
+                Text("No photos larger than \(formatBytes(library.threshold)). Lower the limit below.")
             } actions: {
-                CoffeeLink().buttonStyle(.bordered)
+                CoffeeLink()
             }
+            // Same pinned bar as the list, so the slider sits in one consistent place.
+            .safeAreaInset(edge: .bottom) { thresholdBar }
         } else {
             List(library.items, selection: $selection) { item in
                 PhotoRow(item: item)
@@ -87,27 +86,67 @@ struct PhotoListView: View {
     }
 
     private var summaryBar: some View {
-        HStack {
-            Text("\(library.items.count) photos · \(formatBytes(library.totalSize))")
-            Spacer()
-            if !selection.isEmpty {
-                Text("\(selection.count) selected")
-                    .foregroundStyle(.tint)
+        VStack(spacing: 6) {
+            HStack {
+                Text("\(library.items.count) photos · \(formatBytes(library.totalSize))")
+                Spacer()
+                if !selection.isEmpty {
+                    Text("\(selection.count) selected")
+                        .foregroundStyle(.tint)
+                }
             }
+            .font(.footnote)
+            thresholdSlider
         }
-        .font(.footnote)
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.bar)
     }
 
+    /// The slider in its own pinned bar — used by the empty state so it matches the
+    /// list's summary bar chrome instead of floating at the screen edge.
+    private var thresholdBar: some View {
+        thresholdSlider
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(.bar)
+    }
+
+    /// Filters the library by minimum photo size. Re-scans (cheaply, from cache) on release.
+    private var thresholdSlider: some View {
+        HStack(spacing: 10) {
+            Text("≥ \(formatBytes(library.threshold))")
+                .font(.caption).monospacedDigit()
+                .frame(width: 74, alignment: .leading)
+            Slider(
+                value: thresholdBinding,
+                in: log2(Double(PhotoLibrary.minThreshold))...log2(Double(PhotoLibrary.maxThreshold))
+            ) { editing in
+                if !editing { Task { await library.scan() } }  // rescan when the user lets go
+            }
+        }
+    }
+
+    // Log scale: 500KB→50MB spans 100×, so linear would bunch everything under 5MB.
+    private var thresholdBinding: Binding<Double> {
+        Binding(
+            get: { log2(Double(library.threshold)) },
+            set: { library.threshold = Int64(pow(2, $0)) }
+        )
+    }
+
+    private var allSelected: Bool {
+        !library.items.isEmpty && selection.count == library.items.count
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Picker("Quality", selection: $preset) {
-                ForEach(QualityPreset.allCases) { Text($0.label).tag($0) }
+            if !library.items.isEmpty {
+                Button(allSelected ? "Deselect All" : "Select All") {
+                    selection = allSelected ? [] : Set(library.items.map(\.id))
+                }
             }
-            .pickerStyle(.menu)
         }
         ToolbarItem(placement: .topBarTrailing) {
             if selection.isEmpty {
@@ -136,10 +175,13 @@ struct PhotoListView: View {
         for (index, item) in targets.enumerated() {
             compressProgress = "Compressing \(index + 1) of \(targets.count)…"
             do {
+                // Only produce the temp file here — nothing is saved to the library
+                // until the user chooses Keep Both / Delete Originals in the compare view.
+                // The compare view's per-photo slider re-encodes from its own default,
+                // so this initial quality is just a starting point.
                 let result = try await Compressor.compress(
-                    item.asset, preset: preset, listedSize: item.byteSize
+                    item.asset, preset: .high, listedSize: item.byteSize
                 )
-                _ = try await Compressor.save(result)
                 output.append(result)
             } catch {
                 failures.append(error.localizedDescription)
@@ -216,9 +258,10 @@ enum Thumbnails {
 struct CoffeeLink: View {
     var body: some View {
         Link(destination: URL(string: "https://buymeacoffee.com/gians")!) {
-            Label("Buy me a coffee", systemImage: "cup.and.saucer.fill")
+            Label("Buy me a coffee", systemImage: "cup.and.saucer")
+                .font(.caption)
         }
-        .tint(.orange)
+        .foregroundStyle(.secondary)
     }
 }
 
