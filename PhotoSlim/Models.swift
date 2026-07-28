@@ -1,5 +1,6 @@
 import Foundation
 import Photos
+import AVFoundation
 
 enum QualityPreset: String, CaseIterable, Identifiable {
     case high, medium, low
@@ -17,13 +18,47 @@ enum QualityPreset: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Photo picker label — framed by the saving (what the user wants), with a
+    /// reassuring quality note. "Low quality" scared people off the biggest saving
+    /// even though a 0.3 HEIC re-encode is visually close to the original.
     var label: String {
         switch self {
-        case .high: "High"
-        case .medium: "Medium"
-        case .low: "Low"
+        case .high: "Small saving · best quality"
+        case .medium: "Balanced · great quality"
+        case .low: "Biggest saving · still looks great"
         }
     }
+
+    /// Video tiers are resolution-based — AVAssetExportSession presets have no
+    /// quality dial, so "harder" compression means a smaller frame.
+    var exportPreset: String {
+        switch self {
+        case .high: AVAssetExportPresetHEVC1920x1080
+        case .medium: AVAssetExportPreset1280x720
+        case .low: AVAssetExportPreset960x540
+        }
+    }
+
+    /// Video picker label — saving-first, with the resolution as the detail. Video
+    /// tiers are resolution changes, so the resolution is the honest quality signal.
+    var videoLabel: String {
+        switch self {
+        case .high: "Small saving · 1080p"
+        case .medium: "Balanced · 720p"
+        case .low: "Biggest saving · 540p"
+        }
+    }
+}
+
+enum SortOrder: String, CaseIterable, Identifiable {
+    // Raw values are a persistence contract (stored in UserDefaults) — do NOT rename
+    // them, or saved preferences silently reset to the default on the next launch.
+    case size = "size"
+    case date = "date"
+
+    var id: String { rawValue }
+    var label: String { self == .size ? "Largest first" : "Newest first" }
+    var systemImage: String { self == .size ? "arrow.down.circle" : "calendar" }
 }
 
 struct PhotoItem: Identifiable, Hashable {
@@ -38,37 +73,33 @@ struct PhotoItem: Identifiable, Hashable {
 
 struct CompressedResult: Identifiable {
     let original: PHAsset
-    /// The exact bytes we re-encoded from — kept so the compare view shows the same
-    /// source pixels we measured against, not a separately-fetched thumbnail.
-    let originalData: Data
     let originalSize: Int64
-    /// Mutable: the compare view's quality slider re-encodes to a new temp file.
-    var compressedURL: URL
-    var compressedSize: Int64
-    var quality: Double
+    let compressedURL: URL
+    let compressedSize: Int64
 
     var id: String { original.localIdentifier }
+    var isVideo: Bool { original.mediaType == .video }
     var savedBytes: Int64 { originalSize - compressedSize }
     var savedFraction: Double {
         originalSize > 0 ? Double(savedBytes) / Double(originalSize) : 0
     }
+    var savedPercent: Int { Int(savedFraction * 100) }
 }
 
 enum CompressError: LocalizedError {
     case loadFailed
     case decodeFailed
     case encodeFailed
-    case saveFailed
     case noGain(decoded: Int64, compressed: Int64)
 
     var errorDescription: String? {
         switch self {
-        case .loadFailed: "Couldn't load the original photo."
+        // Media-neutral wording — these are thrown by both the photo and video pipelines.
+        case .loadFailed: "Couldn't load the original."
         case .decodeFailed: "Couldn't read the photo data."
-        case .encodeFailed: "Couldn't write the compressed photo."
-        case .saveFailed: "Couldn't save the compressed photo to your library."
+        case .encodeFailed: "Couldn't create the compressed copy."
         case let .noGain(decoded, compressed):
-            "No gain: decoded \(formatBytes(decoded)) → \(formatBytes(compressed)). "
+            "Already as small as it gets: \(formatBytes(decoded)) → \(formatBytes(compressed)). "
             + "The full-resolution original may be in iCloud, not on this device."
         }
     }

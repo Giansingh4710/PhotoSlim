@@ -4,7 +4,12 @@ import SwiftUI
 struct PhotoSlimApp: App {
     var body: some Scene {
         WindowGroup {
-            PhotoListView()
+            TabView {
+                PhotoListView()
+                    .tabItem { Label("Photos", systemImage: "photo") }
+                PhotoListView(mediaType: .video)
+                    .tabItem { Label("Videos", systemImage: "video") }
+            }
         }
     }
 }
