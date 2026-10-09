@@ -2,6 +2,10 @@ import SwiftUI
 import Photos
 
 struct PhotoListView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var compressionTask: Task<Void, Never>?
+    @State private var operationToken: UUID?
+    @State private var reviewTempURL: URL?
     let mediaType: PHAssetMediaType
     @State private var library: PhotoLibrary
     @State private var selection = Set<String>()
@@ -44,7 +48,7 @@ struct PhotoListView: View {
         NavigationStack {
             Group {
                 switch library.authStatus {
-                case .authorized: content
+                case .authorized, .limited: content
                 case .notDetermined: ProgressView()
                 default: AccessDeniedView(status: library.authStatus)
                 }
@@ -52,6 +56,16 @@ struct PhotoListView: View {
             .navigationTitle(mediaType == .video ? "Videos" : "Photos")
             .toolbar { toolbarContent }
             .task { await library.requestAccess() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await library.requestAccess(); await library.rescan(silent: true) } }
+                if phase == .background { compressionTask?.cancel() }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if library.authStatus == .limited {
+                    Text("Showing selected photos. Change your selection in Settings.")
+                        .font(.caption).padding(8)
+                }
+            }
             // Drop selected IDs a re-scan removed, so we never target stale items.
             .onChange(of: library.items) { _, items in
                 guard !selection.isEmpty else { return }
@@ -66,7 +80,11 @@ struct PhotoListView: View {
                 preview = nil
             }
         }
-        .sheet(item: $reviewResult) { result in
+        .sheet(item: $reviewResult, onDismiss: {
+            if let reviewTempURL { try? FileManager.default.removeItem(at: reviewTempURL) }
+            reviewTempURL = nil
+            MediaOperation.release(operationToken); operationToken = nil
+        }) { result in
             MediaReviewView(result: result) { deleted in
                 if deleted { library.remove(ids: [result.id]) }
                 Compressor.discard([result])
@@ -90,12 +108,12 @@ struct PhotoListView: View {
         ) { targets in
             ForEach(QualityPreset.allCases) { preset in
                 Button(mediaType == .video ? preset.videoLabel : preset.label) {
-                    Task { await runBulk(targets, preset: preset) }
+                    compressionTask = Task { await runBulk(targets, preset: preset) }
                 }
             }
             Button("Cancel", role: .cancel) { }
         } message: { targets in
-            Text("Higher quality keeps more detail but saves less space. This replaces \(countLabel(targets.count)) with new, smaller copies that look identical and keep their original date. Because they're new files, they'll show as \"recently added\" — near the top when you pick \(noun) in apps like Messages or WhatsApp. Originals are deleted (iOS confirms once per 100; they stay in Recently Deleted for 30 days).")
+            Text("Higher quality keeps more detail but saves less space. This replaces \(countLabel(targets.count)) with new, smaller lossy copies that keep their original date but can lose detail. Because they're new files, they'll show as \"recently added\" — near the top when you pick \(noun) in apps like Messages or WhatsApp. Deletion syncs to iCloud Photos and your other devices. Originals stay in Recently Deleted for up to 30 days. Review the copies before permanently deleting any originals. People tags and some library associations do not transfer.")
         }
         .alert("Done", isPresented: presence($bulkSummary)) {
             Button("OK") { }
@@ -106,7 +124,8 @@ struct PhotoListView: View {
             if isCompressing {
                 CompressingOverlay(
                     text: overlayText,
-                    progress: bulkTotal > 0 ? Double(bulkDone) / Double(bulkTotal) : itemProgress
+                    progress: bulkTotal > 0 ? Double(bulkDone) / Double(bulkTotal) : itemProgress,
+                    onCancel: { compressionTask?.cancel() }
                 )
             }
         }
@@ -125,7 +144,7 @@ struct PhotoListView: View {
             } description: {
                 Text("No \(noun) larger than \(formatBytes(library.threshold)). Lower the limit below.")
             } actions: {
-                CoffeeLink()
+                Text("Only supported local JPEG, HEIC and standard videos are listed. Live Photos, RAW, edited and special media are left untouched.").font(.caption)
             }
             .safeAreaInset(edge: .bottom) { thresholdBar }
         } else if isSelecting {
@@ -140,6 +159,7 @@ struct PhotoListView: View {
             List(library.items) { item in
                 Button { preview = item } label: { PhotoRow(item: item) }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("photo-row-\(item.id)")
             }
             .safeAreaInset(edge: .top) { summaryBar }
         }
@@ -198,6 +218,7 @@ struct PhotoListView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) { PrivacySupportButton() }
         ToolbarItem(placement: .topBarLeading) {
             if isSelecting {
                 Button(allSelected ? "Deselect All" : "Select All") {
@@ -220,8 +241,6 @@ struct PhotoListView: View {
                 }
             } else if !library.items.isEmpty {
                 sortMenu
-            } else {
-                CoffeeLink().labelStyle(.iconOnly)
             }
         }
     }
@@ -256,12 +275,16 @@ struct PhotoListView: View {
     private func runPendingCompress() {
         guard let pending = pendingCompress else { return }
         pendingCompress = nil
-        Task { await compressOne(pending.item, preset: pending.preset) }
+        compressionTask = Task { await compressOne(pending.item, preset: pending.preset) }
     }
 
     /// Single-item flow: compress the tapped item, then open the review sheet where the
     /// user compares original vs compressed and chooses Keep Both / Delete Original.
     private func compressOne(_ item: PhotoItem, preset: QualityPreset) async {
+        guard !isCompressing, !SlimRunStore.hasRun, let token = MediaOperation.acquire() else {
+            errorMessage = "Finish the current compression, review, or unfinished Slim All run first."; return
+        }
+        operationToken = token
         isCompressing = true
         // itemProgress stays nil (spinner) until the first progress callback fires. Only
         // the video export reports progress, so photos keep the spinner and videos flip
@@ -271,15 +294,28 @@ struct PhotoListView: View {
             reviewResult = try await Compressor.compress(
                 item.asset, preset: preset, listedSize: item.byteSize
             ) { fraction in itemProgress = fraction }
+            reviewTempURL = reviewResult?.compressedURL
         } catch {
-            errorMessage = error.localizedDescription
+            MediaOperation.release(operationToken); operationToken = nil
+            if !(error is CancellationError) { errorMessage = error.localizedDescription }
         }
     }
 
-    /// Bulk flow: compress every target and, per batch of 100, save the copies and
+    /// Bulk flow: compress every target and, per storage-bounded batch, save the copies and
     /// delete their originals in one atomic transaction (one iOS delete prompt per
     /// batch). Safe to interrupt — completed batches are clean, the rest untouched.
     private func runBulk(_ targets: [PhotoItem], preset: QualityPreset) async {
+        // A Slim All run owns the library while it's active (it survives tab switches).
+        // Interleaving a second mass create/delete pipeline with it would let this path
+        // delete originals sitting in Slim's pending window and re-compress its copies.
+        if PhotoLibrary.suppressRescans || SlimRunStore.hasRun {
+            bulkSummary = "A Slim All run is in progress. Pause or finish it before compressing from here."
+            return
+        }
+        guard !isCompressing, let token = MediaOperation.acquire() else {
+            bulkSummary = "Finish the other compression or review first."; return
+        }
+        defer { MediaOperation.release(token) }
         // Keep the selection if we bail on low space — the warning tells the user to
         // free space and retry, so they shouldn't have to re-select everything.
         if let warning = lowSpaceWarning(for: targets) {
@@ -316,6 +352,7 @@ struct PhotoListView: View {
         } else if outcome.errored {
             summary += " Something went wrong saving to your library, so the rest were left untouched — try again."
         }
+        summary += " Review your saved copies before permanently deleting originals from Recently Deleted. Deletion syncs across iCloud Photos devices."
         bulkSummary = summary
     }
 
@@ -326,7 +363,7 @@ struct PhotoListView: View {
     /// conservatively by the total original size (copies never exceed it in aggregate
     /// for our lossy presets). Warn rather than hard-block.
     private func lowSpaceWarning(for targets: [PhotoItem]) -> String? {
-        guard let free = Compressor.availableBytes() else { return nil }
+        guard let free = Compressor.availableBytes() else { return "Couldn't verify available storage. Please try again before compressing." }
         let needed = targets.reduce(0) { $0 + $1.byteSize }
         guard free < needed else { return nil }
         return "Not enough free space to do this safely. Compressing \(countLabel(targets.count)) needs about \(formatBytes(needed)) free (deleted originals stay in Recently Deleted for 30 days). Free up space or select fewer, then try again."
@@ -398,13 +435,34 @@ enum Thumbnails {
     }
 }
 
-struct CoffeeLink: View {
+struct PrivacySupportButton: View {
+    @State private var showPrivacy = false
     var body: some View {
-        Link(destination: URL(string: "https://buymeacoffee.com/gians")!) {
-            Label("Buy me a coffee", systemImage: "cup.and.saucer")
-                .font(.caption)
+        Button { showPrivacy = true } label: {
+            Label("Privacy & Support", systemImage: "info.circle")
         }
-        .foregroundStyle(.secondary)
+            .labelStyle(.iconOnly)
+            .font(.caption)
+            .sheet(isPresented: $showPrivacy) { PrivacyView() }
+    }
+}
+
+struct PrivacyView: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("PhotoSlim does not collect your photos, personal information, or usage analytics. There are no accounts, ads, tracking SDKs, or subscriptions.")
+                    Text("Photo access is used to list supported media, preview it, and save smaller copies. Photos and Videos support Selected Photos access. Compression runs on your device. Temporary copies, size caches and unfinished-run records stay in app storage.")
+                    Text("Apple Photos may download originals from your iCloud library for previews. Saved copies and deletions may sync through iCloud Photos according to your settings. PhotoSlim does not upload media to developer or third-party servers.")
+                    Text("Compression is lossy. Review copies before deleting originals. Deleting originals affects other devices using iCloud Photos; permanently deleting them from Recently Deleted removes your recovery option.")
+                    Link("Contact support", destination: URL(string: "mailto:giansingh4710@gmail.com")!)
+                }.padding()
+            }
+            .navigationTitle("Privacy & Support")
+            .toolbar { Button("Done") { dismiss() } }
+        }
     }
 }
 
@@ -412,6 +470,8 @@ private struct CompressingOverlay: View {
     let text: String
     /// Determinate fraction (0…1) for bulk runs; nil shows an indeterminate spinner.
     var progress: Double? = nil
+    let onCancel: () -> Void
+    @State private var cancelling = false
 
     var body: some View {
         ZStack {
@@ -423,6 +483,8 @@ private struct CompressingOverlay: View {
                     ProgressView()
                 }
                 Text(text).font(.footnote)
+                Button(cancelling ? "Stopping safely…" : "Cancel") { cancelling = true; onCancel() }
+                    .disabled(cancelling)
             }
             .padding(24)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -430,7 +492,7 @@ private struct CompressingOverlay: View {
     }
 }
 
-private struct AccessDeniedView: View {
+struct AccessDeniedView: View {  // shared with the Slim All tab
     let status: PHAuthorizationStatus
 
     var body: some View {
@@ -438,7 +500,7 @@ private struct AccessDeniedView: View {
             Label("Photo access needed", systemImage: "lock")
         } description: {
             Text(status == .limited
-                 ? "PhotoSlim needs access to your whole library to find your largest files."
+                 ? "Slim All requires full access to safely reconcile an interrupted run. You can compress selected items in the Photos and Videos tabs."
                  : "Enable photo access for PhotoSlim in Settings.")
         } actions: {
             Button("Open Settings") {

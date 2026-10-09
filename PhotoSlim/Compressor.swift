@@ -8,13 +8,23 @@ enum Compressor {
 
     // MARK: - Preview
 
-    /// Full-quality preview image of the asset's current version, downscaled during
-    /// decode to `maxPixel` on the long edge — a 48MP photo never becomes a full-res
-    /// UIImage in memory. Honors EXIF orientation. iCloud download allowed.
+    /// Ask Photos for a bounded preview; do not load an entire original into memory
+    /// just to display a small image. Photos applies orientation. iCloud is allowed.
     static func previewImage(for asset: PHAsset, maxPixel: Int) async -> UIImage? {
-        guard let data = try? await originalData(for: asset),
-              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        return thumbnail(from: source, maxPixel: maxPixel)
+        let options = PHImageRequestOptions()
+        options.version = .current
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .exact
+        options.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { continuation in
+            PHImageManager.default().requestImage(
+                for: asset, targetSize: CGSize(width: maxPixel, height: maxPixel),
+                contentMode: .aspectFit, options: options
+            ) { image, info in
+                guard info?[PHImageResultIsDegradedKey] as? Bool != true else { return }
+                continuation.resume(returning: image)
+            }
+        }
     }
 
     /// Preview image straight from a compressed temp file on disk.
@@ -43,50 +53,17 @@ enum Compressor {
         _ asset: PHAsset, preset: QualityPreset, listedSize: Int64,
         onProgress: @escaping @MainActor (Double) -> Void = { _ in }
     ) async throws -> CompressedResult {
+        try Task.checkCancellation()
         let (url, compressedSize, originalSize) = try await compressToTemp(
             asset: asset, preset: preset, listedSize: listedSize, onProgress: onProgress
         )
+        if Task.isCancelled { try? FileManager.default.removeItem(at: url); throw CancellationError() }
         return CompressedResult(
             original: asset,
             originalSize: originalSize,
             compressedURL: url,
             compressedSize: compressedSize
         )
-    }
-
-    /// Some already-compressed sources don't shrink at the chosen quality (a HEIC
-    /// re-encode at 0.8 can even grow). Steps the quality down until the output is
-    /// genuinely smaller, so "High" still yields a real saving instead of an error.
-    /// Runs inside an autoreleasepool so ImageIO temporaries drain per call instead
-    /// of piling up across a bulk batch.
-    private static func encodeSmallest(
-        _ data: Data, preset: QualityPreset
-    ) throws -> (data: NSData, size: Int64) {
-        try autoreleasepool {
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  CGImageSourceGetCount(source) > 0 else {
-                throw CompressError.decodeFailed
-            }
-
-            let originalSize = Int64(data.count)
-            let qualities = [preset.quality] + [0.6, 0.4, 0.3].filter { $0 < preset.quality }
-
-            var smallest: (data: NSData, size: Int64)?
-            for quality in qualities {
-                guard let encoded = encodeHEIC(source, quality: quality) else { continue }
-                let size = Int64(encoded.length)
-                if size < (smallest?.size ?? .max) {
-                    smallest = (encoded, size)
-                }
-                if size < originalSize { break }  // good enough — stop stepping down
-            }
-
-            guard let smallest, smallest.size < originalSize else {
-                // Even the lowest quality couldn't beat the original — truly incompressible.
-                throw CompressError.noGain(decoded: originalSize, compressed: smallest?.size ?? originalSize)
-            }
-            return smallest
-        }
     }
 
     struct BulkOutcome {
@@ -98,11 +75,10 @@ enum Compressor {
         var errored = false       // a batch commit failed for a real reason; the run stopped
     }
 
-    /// Batches of 100. Each batch commits atomically (create copies + delete originals
-    /// in ONE transaction), so iOS prompts once per batch and every confirmed batch is
-    /// fully clean. Large batches keep the prompt count low; the trade-off is one prompt
-    /// per 100 items (iOS has no way to pre-authorize deletions).
+    /// Bound both prompt count and temporary storage. One unusually large item gets
+    /// its own batch and still has to pass the per-item free-space check.
     private static let batchSize = 100
+    private static let batchByteBudget: Int64 = 256 * 1_024 * 1_024
 
     /// Bulk pipeline for photos or videos, safe to interrupt. Each batch is compressed
     /// to temp files, then created-and-deleted in a single atomic transaction:
@@ -121,12 +97,28 @@ enum Compressor {
         let albumIndex = userAlbumIndex(for: targets.map(\.asset))
         var done = 0
 
-        for start in stride(from: 0, to: targets.count, by: batchSize) {
-            let batch = targets[start..<min(start + batchSize, targets.count)]
+        var start = 0
+        while start < targets.count {
+            var end = start
+            var bytes: Int64 = 0
+            while end < targets.count, end - start < batchSize {
+                let next = max(0, targets[end].listedSize)
+                if end > start, next > batchByteBudget - bytes { break }
+                bytes += next
+                end += 1
+                if bytes >= batchByteBudget { break }
+            }
+            let batch = targets[start..<end]
+            start = end
 
             // Compress the batch to temp files (nothing saved yet).
             var encoded: [(asset: PHAsset, url: URL, savedBytes: Int64)] = []
             for item in batch {
+                if Task.isCancelled {
+                    for item in encoded { try? FileManager.default.removeItem(at: item.url) }
+                    outcome.cancelled = true
+                    return outcome
+                }
                 do {
                     let (url, compressedSize, originalSize) = try await compressToTemp(
                         asset: item.asset, preset: preset, listedSize: item.listedSize
@@ -188,6 +180,8 @@ enum Compressor {
             return .committed(Set(created.map(\.localIdentifier)))
         } catch let error as PHPhotosError where error.code == .userCancelled {
             return .cancelled
+        } catch is CancellationError {
+            return .cancelled
         } catch {
             return .failed
         }
@@ -204,6 +198,18 @@ enum Compressor {
         _ items: [(source: PHAsset, url: URL, albums: [PHAssetCollection])],
         deleteOriginals: Bool = true
     ) async throws -> [PHAsset] {
+        try Task.checkCancellation()
+        guard items.allSatisfy({ MediaSafety.unchanged($0.source) && FileManager.default.fileExists(atPath: $0.url.path) })
+        else { throw CompressError.sourceChanged }
+        var copyBytes: Int64 = 0
+        for item in items {
+            let size = try item.url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            let (sum, overflow) = copyBytes.addingReportingOverflow(Int64(size))
+            guard size > 0, !overflow else { throw CompressError.lowSpace }
+            copyBytes = sum
+        }
+        guard StorageSafety.hasHeadroom(free: availableBytes(), bytes: copyBytes, copies: 1)
+        else { throw CompressError.lowSpace }
         var created: [PHAsset] = []
         try await PHPhotoLibrary.shared().performChanges {
             created = []
@@ -222,13 +228,20 @@ enum Compressor {
     /// One pass over the user albums each target belongs to → asset id → containing
     /// albums. Only indexes the targeted assets, so a huge library with big albums
     /// doesn't materialize hundreds of thousands of memberships for a small run.
-    private static func userAlbumIndex(for assets: [PHAsset]) -> [String: [PHAssetCollection]] {
+    ///
+    /// Regular albums only. Shared albums (.albumCloudShared) share the .album collection
+    /// type, so they come back from this fetch — but an app can't add assets to them, and
+    /// enqueueing that just makes Photos silently drop the request. Skip them explicitly
+    /// rather than walking their contents for nothing. Shared-album membership is one of
+    /// the things a replaced asset genuinely loses; see the Slim All confirm screen.
+    static func userAlbumIndex(for assets: [PHAsset]) -> [String: [PHAssetCollection]] {
         let targetIDs = Set(assets.map(\.localIdentifier))
         guard !targetIDs.isEmpty else { return [:] }
         var index: [String: [PHAssetCollection]] = [:]
         let albums = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
         albums.enumerateObjects { album, _, _ in
-            guard album.assetCollectionType == .album else { return }
+            guard album.assetCollectionType == .album,
+                  album.assetCollectionSubtype != .albumCloudShared else { return }
             PHAsset.fetchAssets(in: album, options: nil).enumerateObjects { asset, _, _ in
                 guard targetIDs.contains(asset.localIdentifier) else { return }
                 index[asset.localIdentifier, default: []].append(album)
@@ -240,26 +253,46 @@ enum Compressor {
     /// Compresses one asset (photo or video) to a temp file, dispatching on media type.
     /// Returns only small values so image buffers are released when this frame exits —
     /// before the caller awaits the library save.
-    private static func compressToTemp(
+    /// Originals are local-only by default. Previews may separately retrieve iCloud
+    /// media, but compression never silently downloads an evicted original.
+    static func compressToTemp(
         asset: PHAsset, preset: QualityPreset, listedSize: Int64,
+        allowNetwork: Bool = false,
         onProgress: @escaping @MainActor (Double) -> Void = { _ in }
     ) async throws -> (url: URL, compressedSize: Int64, originalSize: Int64) {
+        try Task.checkCancellation()
+        guard MediaSafety.resource(for: asset) != nil else { throw CompressError.unsafeMedia }
+        guard MediaSafety.unchanged(asset) else { throw CompressError.sourceChanged }
+        guard StorageSafety.hasHeadroom(free: availableBytes(), bytes: listedSize) else { throw CompressError.lowSpace }
         if asset.mediaType == .video {
             return try await VideoCompressor.exportToTemp(
-                asset: asset, preset: preset, listedSize: listedSize, onProgress: onProgress
+                asset: asset, preset: preset, listedSize: listedSize,
+                allowNetwork: allowNetwork, onProgress: onProgress
             )
         }
-        let data = try await originalData(for: asset)
-        let encoded = try encodeSmallest(data, preset: preset)
+        // Bound compressed input buffering as well as the decoded pixel dimensions.
+        guard listedSize <= 128 * 1_024 * 1_024 else { throw CompressError.unsafeMedia }
+        let data = try await originalData(for: asset, allowNetwork: allowNetwork)
+        try Task.checkCancellation()
+        let encoded = try PhotoEncoder.encodeSmallest(data, preset: preset)
+        try Task.checkCancellation()
         let url = try writeTemp(encoded.data)
-        return (url, encoded.size, max(listedSize, Int64(data.count)))
+        return (url, encoded.size, Int64(data.count))
     }
 
     /// Fresh unique temp-file URL with the given extension.
     static func tempURL(ext: String) -> URL {
-        FileManager.default.temporaryDirectory
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotoSlimMedia", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(ext)
+    }
+
+    /// Only our own scratch files; saved assets and recovery records are elsewhere.
+    static func cleanAbandonedTemps() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotoSlimMedia", isDirectory: true)
+        try? FileManager.default.removeItem(at: directory)
     }
 
     /// Writes HEIC bytes to a fresh unique temp file and returns its URL.
@@ -269,32 +302,23 @@ enum Compressor {
         return url
     }
 
-    /// Encodes the source image to HEIC at the given quality, preserving metadata.
-    /// AddImageFromSource carries EXIF/GPS/TIFF/orientation across verbatim.
-    private static func encodeHEIC(_ source: CGImageSource, quality: Double) -> NSData? {
-        let out = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(
-            out, UTType.heic.identifier as CFString, 1, nil
-        ) else { return nil }
-        let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
-        CGImageDestinationAddImageFromSource(dest, source, 0, options as CFDictionary)
-        guard CGImageDestinationFinalize(dest) else { return nil }
-        return out
-    }
-
-    private static func originalData(for asset: PHAsset) async throws -> Data {
+    private static func originalData(for asset: PHAsset, allowNetwork: Bool = true) async throws -> Data {
         let options = PHImageRequestOptions()
         options.version = .current
         options.deliveryMode = .highQualityFormat
-        options.isNetworkAccessAllowed = true
+        options.isNetworkAccessAllowed = allowNetwork
         options.isSynchronous = false
 
         return try await withCheckedThrowingContinuation { continuation in
             PHImageManager.default().requestImageDataAndOrientation(
                 for: asset, options: options
-            ) { data, _, _, _ in
+            ) { data, _, _, info in
                 if let data {
                     continuation.resume(returning: data)
+                } else if info?[PHImageResultIsInCloudKey] as? Bool == true {
+                    // Only reachable with allowNetwork == false — the caller asked to
+                    // stay on-device, so this is a skip, not a failure.
+                    continuation.resume(throwing: CompressError.notOnDevice)
                 } else {
                     continuation.resume(throwing: CompressError.loadFailed)
                 }
@@ -320,12 +344,105 @@ enum Compressor {
         request.creationDate = source.creationDate
         request.location = source.location
         request.isFavorite = source.isFavorite
+        request.isHidden = source.isHidden
 
         for album in albums {
             PHAssetCollectionChangeRequest(for: album)?
                 .addAssets([placeholder] as NSArray)
         }
         return placeholder.localIdentifier
+    }
+
+    // MARK: - Slim All primitives
+
+    /// Creates ONE copy in its own creation-only transaction.
+    ///
+    /// Two properties the batched path (`performCreateDelete`) can't give us, both
+    /// required by Slim All:
+    ///   • creation-only changes never prompt, so a whole-library run stays silent
+    ///     except for the periodic delete flushes;
+    ///   • one asset per transaction gets its own distinct "date added", which is the
+    ///     only lever iOS gives us over Recently Added ordering (addedDate is readonly).
+    /// Batching creates would collide on that timestamp and scramble the order — which
+    /// is the entire bug this feature exists to fix.
+    ///
+    /// Uses PHAssetCreationRequest (not the creationRequestForAssetFrom* convenience the
+    /// per-tab flows use) for byte-exact resource control plus `originalFilename`, and
+    /// `shouldMoveFile` so Photos can consume the temp rather than retain a second
+    /// scratch copy. Capacity is still checked conservatively before importing.
+    static func createOne(
+        source: PHAsset,
+        url: URL,
+        filename: String?,
+        albums: [PHAssetCollection]
+    ) async throws -> String {
+        try Task.checkCancellation()
+        guard MediaSafety.unchanged(source) else { throw CompressError.sourceChanged }
+        let fileBytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard StorageSafety.hasHeadroom(free: availableBytes(), bytes: Int64(fileBytes), copies: 1)
+        else { throw CompressError.lowSpace }
+        var newID: String?
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+
+            let options = PHAssetResourceCreationOptions()
+            options.shouldMoveFile = true
+            if let filename { options.originalFilename = filename }
+            request.addResource(
+                with: source.mediaType == .video ? .video : .photo,
+                fileURL: url,
+                options: options
+            )
+
+            // Same metadata carry-over as addCreation: Photos sorts the timeline on the
+            // asset's own creationDate, so without this the copy lands at "today".
+            request.creationDate = source.creationDate
+            request.location = source.location
+            request.isFavorite = source.isFavorite
+            request.isHidden = source.isHidden
+
+            guard let placeholder = request.placeholderForCreatedAsset else { return }
+            newID = placeholder.localIdentifier
+            for album in albums {
+                PHAssetCollectionChangeRequest(for: album)?
+                    .addAssets([placeholder] as NSArray)
+            }
+        }
+        // addResource always "succeeds"; validation is deferred to the commit, so a nil
+        // id here means the transaction really did produce nothing.
+        guard let newID else { throw CompressError.encodeFailed }
+        return newID
+    }
+
+    enum DeleteResult {
+        case deleted(Set<String>)  // ALL requested ids confirmed gone
+        case partial(Set<String>)  // some gone, some remain — the delete did not fully land
+        case cancelled             // user declined the prompt — nothing changed
+        case unknown               // nothing changed and no verdict; caller must re-verify
+    }
+
+    /// Deletes originals by id in ONE transaction, so iOS prompts once per flush.
+    ///
+    /// Await the actual PhotoKit result. Cancelling or timing out a Swift task cannot
+    /// cancel an outstanding Photos confirmation; starting another delete would race it.
+    static func deleteMany(_ ids: [String]) async -> DeleteResult {
+        await deleteManyRace(ids)
+    }
+
+    private static func deleteManyRace(_ ids: [String]) async -> DeleteResult {
+        guard !ids.isEmpty else { return .deleted([]) }
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return .unknown }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+        // Missing may mean revoked access, not deletion. Never infer a successful delete.
+        guard assets.count == Set(ids).count else { return .unknown }
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.deleteAssets(assets)
+            }
+            return .deleted(Set(ids))
+        } catch let error as PHPhotosError where error.code == .userCancelled {
+            return .cancelled
+        } catch { return .unknown }
     }
 
     // MARK: - Review finish
@@ -355,7 +472,7 @@ enum Compressor {
             return .cancelled
         }
         // Nothing enqueued at all → the copies never saved; surface it as an error.
-        guard !created.isEmpty else { throw CompressError.encodeFailed }
+        guard created.count == items.count else { throw CompressError.encodeFailed }
         return deleteOriginals ? .deleted : .kept
     }
 
@@ -370,6 +487,11 @@ enum Compressor {
     /// deleted originals sit in Recently Deleted for ~30 days), so a low-space device
     /// can run out mid-run — the caller warns the user when headroom is thin.
     static func availableBytes() -> Int64? {
+        // Simulator stress hook: inert unless launched with -slimFakeFreeMB.
+        if let fake = DebugKnobs.fakeFreeMB {
+            let (bytes, overflow) = Int64(fake).multipliedReportingOverflow(by: 1_024 * 1_024)
+            return overflow ? nil : max(0, bytes)
+        }
         let url = FileManager.default.temporaryDirectory
         let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         return values?.volumeAvailableCapacityForImportantUsage

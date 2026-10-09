@@ -1,5 +1,6 @@
 import Foundation
 import Photos
+import AVFoundation
 
 @Observable
 @MainActor
@@ -18,6 +19,7 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     var authStatus: PHAuthorizationStatus = .notDetermined
 
     private let sizeCache: SizeCache
+    private var isObservingLibrary = false
 
     init(mediaType: PHAssetMediaType = .image) {
         self.mediaType = mediaType
@@ -39,7 +41,18 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
            let saved = SortOrder(rawValue: raw) {
             sortOrder = saved
         }
-        PHPhotoLibrary.shared().register(self)
+        // A Slim All run suppresses (discards) change-driven rescans app-wide; this is
+        // the "run ended, reconcile once" signal that replaces them.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(slimRunEnded), name: .slimRunEnded, object: nil
+        )
+    }
+
+    @objc private nonisolated func slimRunEnded() {
+        Task { @MainActor in
+            guard self.hasScanned else { return }  // never-scanned tabs scan on first appear
+            await self.rescan(silent: true)
+        }
     }
 
     private var sortDefaultsKey: String {
@@ -60,6 +73,12 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     private var rescanTask: Task<Void, Never>?
     private var observingPaused = false
 
+    /// Set for the duration of a Slim All run. That run creates and deletes thousands of
+    /// assets; without this, both list tabs would each schedule a rescan storm that fights
+    /// the compression loop for the whole run. Static because the run doesn't own — and
+    /// shouldn't have to find — the other tabs' library instances.
+    nonisolated(unsafe) static var suppressRescans = false
+
     /// Silence change-driven rescans during a bulk run — its own chunk commits would
     /// otherwise trigger dozens of full scans that fight the compression loop and
     /// re-list the copies it just made. resumeObserving() does exactly ONE reconciling
@@ -73,7 +92,7 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     }
 
     private func scheduleRescan() {
-        guard hasScanned, !observingPaused else { return }
+        guard hasScanned, !observingPaused, !Self.suppressRescans else { return }
         rescanTask?.cancel()
         rescanTask = Task {
             try? await Task.sleep(for: .seconds(2))
@@ -87,6 +106,7 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     /// suppresses the "Scanning…" UI (used for post-bulk reconciliation, where the list
     /// is already mostly correct and a full-screen scan view would just flicker).
     func rescan(silent: Bool = false) async {
+        guard !Self.suppressRescans else { return }
         if isRunningScan { rescanPending = true; return }
         await scan(silent: silent)
         while rescanPending {
@@ -103,10 +123,16 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     // MARK: - Auth
 
     func requestAccess() async {
+        let previous = authStatus
         authStatus = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        if previous != authStatus { hasScanned = false; items = [] }
+        if (authStatus == .authorized || authStatus == .limited), !isObservingLibrary {
+            PHPhotoLibrary.shared().register(self)
+            isObservingLibrary = true
+        }
         // The view's .task re-fires on every tab switch — only auto-scan once.
         // Rescans still happen explicitly via the threshold slider.
-        if authStatus == .authorized && !hasScanned {
+        if (authStatus == .authorized || authStatus == .limited) && !hasScanned {
             await scan()
         }
     }
@@ -117,6 +143,8 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
 
     func scan(silent: Bool = false) async {
         guard !isRunningScan else { return }
+        authStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard authStatus == .authorized || authStatus == .limited else { items = []; hasScanned = false; return }
         isRunningScan = true
         hasScanned = true
         // isScanning drives the "Scanning…" view; a silent reconciling scan leaves it
@@ -136,12 +164,15 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         let total = max(assets.count, 1)
 
         for (index, asset) in assets.enumerated() {
+            guard !Task.isCancelled else { hasScanned = false; return }
+            guard MediaSafety.resource(for: asset) != nil else { continue }
+            let key = Self.cacheKey(asset)
             let size: Int64
-            if let hit = cached[asset.localIdentifier] {
+            if let hit = cached[key] {
                 size = hit
             } else {
                 size = await Self.byteSize(of: asset)
-                freshSizes[asset.localIdentifier] = size
+                if size > 0 { freshSizes[key] = size }
             }
 
             if size >= cutoff {
@@ -155,7 +186,7 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         items = Self.sorted(scanned, by: sortOrder)
         scanProgress = 1
 
-        sizeCache.merge(cached, freshSizes, keeping: assets.map(\.localIdentifier))
+        sizeCache.merge(cached, freshSizes, keeping: assets.map(Self.cacheKey))
     }
 
     func remove(ids: Set<String>) {
@@ -204,19 +235,55 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         return assets
     }
 
-    /// PHAsset exposes no public byte size. The fileSize KVC key on PHAssetResource
-    /// is the standard workaround and is App Store-accepted.
-    /// ponytail: KVC key could break on a future iOS — returns 0, item sorts out of view.
-    nonisolated static func byteSize(of asset: PHAsset) async -> Int64 {
-        let resources = PHAssetResource.assetResources(for: asset)
-        let (primary, fallback): (PHAssetResourceType, PHAssetResourceType) =
-            asset.mediaType == .video ? (.video, .fullSizeVideo) : (.photo, .fullSizePhoto)
-        let resource = resources.first { $0.type == primary }
-            ?? resources.first { $0.type == fallback }
-            ?? resources.first
-        guard let resource else { return 0 }
-        return (resource.value(forKey: "fileSize") as? Int64) ?? 0
+    nonisolated static func cacheKey(_ asset: PHAsset) -> String {
+        asset.localIdentifier + "|" + String(asset.modificationDate?.timeIntervalSince1970 ?? 0)
     }
+
+    nonisolated static func cachedSizes() -> [String: Int64] {
+        var merged = SizeCache(filename: "photo-sizes.plist").load()
+        merged.merge(SizeCache(filename: "video-sizes.plist").load()) { _, new in new }
+        return merged
+    }
+
+    /// Read local file metadata through public editing-input URLs first. If Photos
+    /// cannot expose a matching original URL, stream bytes without retaining media.
+    /// Neither path downloads iCloud originals; unknown sizes are never cached.
+    nonisolated static func byteSize(of asset: PHAsset) async -> Int64 {
+        guard !Task.isCancelled, let resource = MediaSafety.resource(for: asset) else { return 0 }
+        let inputOptions = PHContentEditingInputRequestOptions()
+        inputOptions.isNetworkAccessAllowed = false
+        let localSize: Int64 = await withCheckedContinuation { continuation in
+            asset.requestContentEditingInput(with: inputOptions) { input, _ in
+                guard let input, input.uniformTypeIdentifier == resource.uniformTypeIdentifier,
+                      let url = input.fullSizeImageURL ?? (input.audiovisualAsset as? AVURLAsset)?.url,
+                      url.isFileURL,
+                      let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                      size > 0 else { continuation.resume(returning: 0); return }
+                continuation.resume(returning: Int64(size))
+            }
+        }
+        if localSize > 0 { return localSize }
+        guard !Task.isCancelled else { return 0 }
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = false
+        let counter = ResourceByteCounter()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let request = PHAssetResourceManager.default().requestData(for: resource, options: options) { data in
+                    counter.add(data.count)
+                } completionHandler: { error in
+                    continuation.resume(returning: error == nil ? counter.value : 0)
+                }
+                counter.register(request)
+            }
+        } onCancel: { counter.cancel() }
+    }
+
+}
+
+extension Notification.Name {
+    /// Posted when a Slim All run stops suppressing rescans — see PhotoLibrary.suppressRescans.
+    static let slimRunEnded = Notification.Name("slimRunEnded")
 }
 
 // ponytail: plist dict, not Core Data. Revisit if libraries get big enough to stall launch.
@@ -244,7 +311,7 @@ private struct SizeCache {
 
     func forget(_ ids: Set<String>) {
         var dict = load()
-        for id in ids { dict.removeValue(forKey: id) }
+        dict = dict.filter { entry in !ids.contains(String(entry.key.split(separator: "|").first ?? "")) }
         write(dict)
     }
 
@@ -252,4 +319,21 @@ private struct SizeCache {
         guard let data = try? PropertyListEncoder().encode(dict) else { return }
         try? data.write(to: url, options: .atomic)
     }
+}
+
+private final class ResourceByteCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes: Int64 = 0
+    private var request: PHAssetResourceDataRequestID?
+    private var cancelled = false
+    func register(_ request: PHAssetResourceDataRequestID) {
+        lock.lock(); self.request = request; let cancelNow = cancelled; lock.unlock()
+        if cancelNow { PHAssetResourceManager.default().cancelDataRequest(request) }
+    }
+    func cancel() {
+        lock.lock(); cancelled = true; let request = request; lock.unlock()
+        if let request { PHAssetResourceManager.default().cancelDataRequest(request) }
+    }
+    func add(_ count: Int) { lock.lock(); defer { lock.unlock() }; bytes += Int64(count) }
+    var value: Int64 { lock.lock(); defer { lock.unlock() }; return bytes }
 }

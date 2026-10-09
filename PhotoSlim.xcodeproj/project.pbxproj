@@ -5,6 +5,24 @@
 	};
 	objectVersion = 77;
 	objects = {
+        B1000001 = { isa = PBXContainerItemProxy; containerPortal = A1000001; proxyType = 1; remoteGlobalIDString = A1000007; remoteInfo = PhotoSlim; };
+        B1000002 = { isa = PBXTargetDependency; target = A1000007; targetProxy = B1000001; };
+        B1000003 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = PhotoSlimUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+        A1000006 = { isa = PBXFileReference; explicitFileType = wrapper.application; path = PhotoSlim.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        B1000004 = { isa = PBXFileSystemSynchronizedRootGroup; path = PhotoSlimUITests; sourceTree = "<group>"; };
+        B1000005 = {
+            isa = PBXNativeTarget; buildConfigurationList = B1000006;
+            buildPhases = (B1000007, B1000008, B1000009);
+            buildRules = (); dependencies = (B1000002);
+            fileSystemSynchronizedGroups = (B1000004);
+            name = PhotoSlimUITests; productName = PhotoSlimUITests;
+            productReference = B1000003; productType = "com.apple.product-type.bundle.ui-testing";
+        };
+        B1000006 = { isa = XCConfigurationList; buildConfigurations = (B100000A, B100000B); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        B1000007 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        B1000008 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        B1000009 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A1000002 /* PhotoSlim */ = {
@@ -29,6 +47,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000002 /* PhotoSlim */,
+                B1000004 /* PhotoSlimUITests */,
 				A1000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -37,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000006 /* PhotoSlim.app */,
+                B1000003 /* PhotoSlimUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -96,6 +116,7 @@
 			projectRoot = "";
 			targets = (
 				A1000007 /* PhotoSlim */,
+                B1000005 /* PhotoSlimUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -121,6 +142,8 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
+        B100000A = { isa = XCBuildConfiguration; name = Debug; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = UXX67B9ASA; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.giansingh.PhotoSlimUITests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = PhotoSlim;}; };
+        B100000B = { isa = XCBuildConfiguration; name = Release; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = UXX67B9ASA; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.giansingh.PhotoSlimUITests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = PhotoSlim;}; };
 		A100000C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -184,8 +207,8 @@
 				DEVELOPMENT_TEAM = UXX67B9ASA;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "PhotoSlim saves the compressed copies of your photos back to your library.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "PhotoSlim needs access to your photo library to find your largest photos and compress them.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "PhotoSlim saves smaller copies of selected photos and videos to your library for you to review.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "PhotoSlim reads your selected photos and videos to show their sizes, create smaller copies, and delete originals only when you choose.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait";
@@ -214,8 +237,8 @@
 				DEVELOPMENT_TEAM = UXX67B9ASA;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "PhotoSlim saves the compressed copies of your photos back to your library.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "PhotoSlim needs access to your photo library to find your largest photos and compress them.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "PhotoSlim saves smaller copies of selected photos and videos to your library for you to review.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "PhotoSlim reads your selected photos and videos to show their sizes, create smaller copies, and delete originals only when you choose.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait";

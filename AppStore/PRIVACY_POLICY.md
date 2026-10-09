@@ -1,21 +1,21 @@
 # PhotoSlim Privacy Policy
 
-_Last updated: July 17, 2026_
+_Last updated: September 18, 2026_
 
 PhotoSlim is designed to protect your privacy completely.
 
 ## What we collect
-**Nothing.** PhotoSlim does not collect, store, transmit, or share any personal data or usage information.
+**Nothing.** PhotoSlim does not collect personal data or usage information for the developer. There are no analytics, advertising or tracking SDKs. Temporary media copies, size caches and recovery records for unfinished runs are stored locally in the app.
 
 ## Your photos
 PhotoSlim requests access to your photo library only to:
-- scan photos to show you which are largest, and
+- scan supported local photos and videos to show their sizes, and
 - create compressed copies (and, if you choose, delete the originals).
 
-All of this happens **entirely on your device**. Your photos are never uploaded to any server, cloud, or third party. We never see them.
+Compression happens **on your device**. PhotoSlim does not upload your photos to developer or third-party servers. Apple Photos may download previews or originals from your iCloud library. Saved copies and deletions follow your iCloud Photos settings and can sync to your other devices.
 
 ## Network use
-PhotoSlim makes no network requests to us. The only outbound action is an optional "Buy me a coffee" link that opens your browser to a support page — using it is entirely your choice and sends us no data.
+PhotoSlim makes no network requests to developer services. Apple Photos manages any iCloud access. The optional support link opens your email app; information you choose to email is used to respond to your support request.
 
 ## Third parties
 PhotoSlim contains no analytics, no advertising, and no tracking SDKs.

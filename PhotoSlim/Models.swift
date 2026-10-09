@@ -2,7 +2,9 @@ import Foundation
 import Photos
 import AVFoundation
 
-enum QualityPreset: String, CaseIterable, Identifiable {
+// Codable so a Slim All run can persist its chosen preset across a relaunch. The raw
+// values are therefore a persistence contract too — don't rename them.
+enum QualityPreset: String, CaseIterable, Identifiable, Codable {
     case high, medium, low
 
     var id: String { rawValue }
@@ -23,9 +25,9 @@ enum QualityPreset: String, CaseIterable, Identifiable {
     /// even though a 0.3 HEIC re-encode is visually close to the original.
     var label: String {
         switch self {
-        case .high: "Small saving · best quality"
-        case .medium: "Balanced · great quality"
-        case .low: "Biggest saving · still looks great"
+        case .high: "Higher quality"
+        case .medium: "Balanced"
+        case .low: "Smaller file · more detail loss"
         }
     }
 
@@ -87,7 +89,12 @@ struct CompressedResult: Identifiable {
 }
 
 enum CompressError: LocalizedError {
+    case unsafeMedia
+    case sourceChanged
+    case lowSpace
+    case operationBusy
     case loadFailed
+    case notOnDevice   // original lives only in iCloud and network access was disallowed
     case decodeFailed
     case encodeFailed
     case noGain(decoded: Int64, compressed: Int64)
@@ -95,12 +102,17 @@ enum CompressError: LocalizedError {
     var errorDescription: String? {
         switch self {
         // Media-neutral wording — these are thrown by both the photo and video pipelines.
+        case .unsafeMedia: "This format may contain information that compression cannot preserve. The original was left untouched."
+        case .sourceChanged: "The original changed or is no longer accessible. Please scan again. Nothing was deleted."
+        case .lowSpace: "Not enough free space to create a copy safely. Free some space and try again."
+        case .operationBusy: "Finish the other compression or review first."
         case .loadFailed: "Couldn't load the original."
+        case .notOnDevice: "This item is stored in iCloud, not on this device."
         case .decodeFailed: "Couldn't read the photo data."
         case .encodeFailed: "Couldn't create the compressed copy."
         case let .noGain(decoded, compressed):
-            "Already as small as it gets: \(formatBytes(decoded)) → \(formatBytes(compressed)). "
-            + "The full-resolution original may be in iCloud, not on this device."
+            "No saving at this quality: \(formatBytes(decoded)) → \(formatBytes(compressed)). "
+            + "The original was left untouched."
         }
     }
 }

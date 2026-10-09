@@ -86,7 +86,7 @@ struct MediaReviewView: View {
             }
             .disabled(isWorking)
 
-            Text("The copy is saved to your library only when you choose above.")
+            Text("Compression can lose detail. Deletion also syncs through iCloud Photos. Originals stay in Recently Deleted for up to 30 days; review your copy before deleting them permanently. People tags and some library associations do not transfer.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding()

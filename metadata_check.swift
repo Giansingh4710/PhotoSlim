@@ -1,5 +1,5 @@
 // Verifies the core claim: HEIC re-encode shrinks the file AND preserves EXIF/GPS.
-// Mirrors Compressor.compress()'s ImageIO path exactly, minus PhotoKit.
+// Compiles with production PhotoEncoder.swift and Models.swift; no mirrored encoder.
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -43,27 +43,16 @@ func makeSourceJPEG() -> Data {
     return data as Data
 }
 
-/// Identical to Compressor.compress()'s encode step.
-func compress(_ data: Data, quality: Double) -> Data? {
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-          CGImageSourceGetCount(source) > 0 else { return nil }
-    let out = NSMutableData()
-    guard let dest = CGImageDestinationCreateWithData(
-        out, UTType.heic.identifier as CFString, 1, nil) else { return nil }
-    let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
-    CGImageDestinationAddImageFromSource(dest, source, 0, options as CFDictionary)
-    guard CGImageDestinationFinalize(dest) else { return nil }
-    return out as Data
-}
-
 func props(_ data: Data) -> [CFString: Any] {
     let src = CGImageSourceCreateWithData(data as CFData, nil)!
     return CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as! [CFString: Any]
 }
 
+@main struct MetadataChecks {
+static func main() throws {
 // --- run ---
 let original = makeSourceJPEG()
-guard let compressed = compress(original, quality: 0.8) else { fatalError("compress failed") }
+let compressed = try PhotoEncoder.encodeSmallest(original, preset: .high).data as Data
 
 let op = props(original), cp = props(compressed)
 let oExif = op[kCGImagePropertyExifDictionary] as! [CFString: Any]
@@ -92,3 +81,38 @@ assert(cExif[kCGImagePropertyExifLensModel] as? String == "Test Lens 50mm", "len
 let pct = 100 - Int(Double(compressed.count) / Double(original.count) * 100)
 print("PASS  \(original.count / 1024)KB -> \(compressed.count / 1024)KB  (-\(pct)%)")
 print("PASS  date, GPS lat/lon, lens model, dimensions all preserved")
+
+// An animated input must never silently become its first frame.
+let animated = NSMutableData()
+let animationDestination = CGImageDestinationCreateWithData(animated, UTType.gif.identifier as CFString, 2, nil)!
+let fixtureSource = CGImageSourceCreateWithData(original as CFData, nil)!
+for _ in 0..<2 { CGImageDestinationAddImageFromSource(animationDestination, fixtureSource, 0, nil) }
+precondition(CGImageDestinationFinalize(animationDestination))
+do {
+    _ = try PhotoEncoder.encodeSmallest(animated as Data, preset: .medium)
+    fatalError("Animation was flattened")
+} catch CompressError.unsafeMedia { print("PASS  animation refused without flattening") }
+
+// EXIF rotations must remain attached to unchanged dimensions.
+for orientation in [3, 6, 8] {
+    let rotated = NSMutableData()
+    let destination = CGImageDestinationCreateWithData(rotated, UTType.jpeg.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImageFromSource(destination, fixtureSource, 0,
+        [kCGImagePropertyOrientation: orientation] as CFDictionary)
+    precondition(CGImageDestinationFinalize(destination))
+    let output = try PhotoEncoder.encodeSmallest(rotated as Data, preset: .medium).data as Data
+    precondition(props(output)[kCGImagePropertyOrientation] as? Int == orientation)
+}
+print("PASS  rotated photo orientations preserved")
+do {
+    _ = try PhotoEncoder.encodeSmallest(Data([0, 1, 2]), preset: .medium)
+    fatalError("Corrupt input accepted")
+} catch CompressError.decodeFailed { print("PASS  corrupt input rejected") }
+
+do {
+    _ = try PhotoEncoder.encodeSmallest(original.dropLast(300), preset: .medium)
+    fatalError("Truncated JPEG accepted")
+} catch CompressError.decodeFailed { print("PASS  truncated JPEG rejected before replacement") }
+
+}
+}
