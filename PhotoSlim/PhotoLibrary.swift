@@ -165,6 +165,10 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
 
         for (index, asset) in assets.enumerated() {
             guard !Task.isCancelled else { hasScanned = false; return }
+            // Yield even when every item is unsupported, so a large excluded
+            // library cannot monopolize the main actor.
+            if index % 50 == 0 { await Task.yield() }
+            scanProgress = Double(index + 1) / Double(total)
             guard MediaSafety.resource(for: asset) != nil else { continue }
             let key = Self.cacheKey(asset)
             let size: Int64
@@ -179,8 +183,6 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
                 scanned.append(PhotoItem(asset: asset, byteSize: size))
             }
 
-            scanProgress = Double(index + 1) / Double(total)
-            if index % 50 == 0 { await Task.yield() }
         }
 
         items = Self.sorted(scanned, by: sortOrder)

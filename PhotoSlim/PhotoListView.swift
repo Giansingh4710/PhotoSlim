@@ -6,6 +6,7 @@ struct PhotoListView: View {
     @State private var compressionTask: Task<Void, Never>?
     @State private var operationToken: UUID?
     @State private var reviewTempURL: URL?
+    @State private var needsForegroundRefresh = false
     let mediaType: PHAssetMediaType
     @State private var library: PhotoLibrary
     @State private var selection = Set<String>()
@@ -57,8 +58,17 @@ struct PhotoListView: View {
             .toolbar { toolbarContent }
             .task { await library.requestAccess() }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { Task { await library.requestAccess(); await library.rescan(silent: true) } }
-                if phase == .background { compressionTask?.cancel() }
+                // System permission/delete alerts briefly make the app inactive.
+                // Library notifications already reconcile those changes; only a
+                // return from the background needs an explicit refresh.
+                if phase == .active, needsForegroundRefresh {
+                    needsForegroundRefresh = false
+                    Task { await library.requestAccess(); await library.rescan(silent: true) }
+                }
+                if phase == .background {
+                    needsForegroundRefresh = true
+                    compressionTask?.cancel()
+                }
             }
             .safeAreaInset(edge: .bottom) {
                 if library.authStatus == .limited {
@@ -157,7 +167,11 @@ struct PhotoListView: View {
         } else {
             // Browse mode: tapping a row opens the preview (no selection UI in the way).
             List(library.items) { item in
-                Button { preview = item } label: { PhotoRow(item: item) }
+                Button { preview = item } label: {
+                    PhotoRow(item: item)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("photo-row-\(item.id)")
             }
@@ -168,7 +182,7 @@ struct PhotoListView: View {
     private var summaryBar: some View {
         VStack(spacing: 6) {
             HStack {
-                Text("\(library.items.count) \(noun) · \(formatBytes(library.totalSize))")
+                Text("\(countLabel(library.items.count)) · \(formatBytes(library.totalSize))")
                 Spacer()
                 if !selection.isEmpty {
                     Text("\(selection.count) selected").foregroundStyle(.tint)

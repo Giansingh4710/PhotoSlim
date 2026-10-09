@@ -22,7 +22,12 @@ final class PhotoSlimUITests: XCTestCase {
             return false
         }
         app.launch()
-        app.tap() // Handle the real system prompt instead of relying on simctl's grant mapping.
+        // A fresh simulator may present authorization after launch has returned.
+        // Wait for the actual system button instead of tapping before the alert exists.
+        let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = system.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'full access' OR label CONTAINS[c] 'all photos'")).firstMatch
+        if allow.waitForExistence(timeout: 15) { allow.tap() }
+        else { app.tap() }
         let firstPhoto = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'photo-row-'")).firstMatch
         XCTAssertTrue(firstPhoto.waitForExistence(timeout: 60), "Seed a local JPEG above 5 MB and grant Photos access")
         reviewedOriginalID = firstPhoto.identifier
@@ -32,7 +37,8 @@ final class PhotoSlimUITests: XCTestCase {
     private func openPhotoReview() -> XCUIApplication {
         let app = launchWithPhotoAccess()
         let firstPhoto = app.buttons[reviewedOriginalID]
-        firstPhoto.tap()
+        // The entire row, including empty space after the labels, must open preview.
+        firstPhoto.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         let compress = app.buttons["Compress"]
         XCTAssertTrue(compress.waitForExistence(timeout: 10))
         compress.tap()

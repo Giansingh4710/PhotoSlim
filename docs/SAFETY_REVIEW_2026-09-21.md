@@ -49,6 +49,14 @@ xcodebuild -scheme PhotoSlim -configuration Debug \
 
 ## Required before merge/release
 
+### October 9, 2026 follow-up (build 4)
+
+- Made the whole media row tappable, including blank space after its labels; the UI regression explicitly taps that area.
+- Avoided redundant scans after system permission/deletion alerts, yielded during scans of excluded media, and prevented dismissed previews from starting playback after asynchronous loading.
+- All six UI tests passed on an isolated iPhone 17 Pro simulator, iOS 27.0, with generated disposable media. Result: `/tmp/photoslim-review-oct09-rowfix.xcresult`.
+- Production safety/encoder/SHA checks, signed Release archive, and Release static analysis passed. Only the expected unused App Intents metadata warning remained.
+- Physical-device recording and the physical stress/compatibility checks below remain separate release work; simulator results do not establish them.
+
 1. **Physical iPhone/iPad and memory pressure:** test a disposable library on the oldest supported device/OS class as well as a current device. Measure peak memory, responsiveness, and temperature with 48 MP photos, long/large videos, large album memberships, and a large cold scan. Pixel/input caps and sequential work reduce risk but do not establish that iOS cannot terminate the process.
 2. **Actual disk pressure:** the simulator override proves the low-space branch, not full-disk behavior of Photos, AVFoundation, or the filesystem. Exercise real low capacity and write failures while exporting, importing, and synchronizing recovery records. Confirm existing originals remain recoverable.
 3. **In-flight interruption:** termination/relaunch after a declined deletion passed. Still inject termination during copy submission, before its returned ID is journaled, during journal synchronization, and while a deletion is awaiting acknowledgement. Verify source/copy contents and the Recently Deleted originals after each outcome.

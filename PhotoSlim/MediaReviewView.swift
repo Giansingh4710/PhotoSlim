@@ -208,17 +208,24 @@ struct MediaPreviewSheet: View {
     }
 
     private func load() async {
+        guard !Task.isCancelled else { return }
         switch source {
         case .file(let url, let isVideo):
             if isVideo { player = AVPlayer(url: url); player?.play() }
-            else { image = Compressor.previewImage(fromFile: url, maxPixel: Self.previewMaxPixel) }
+            else {
+                image = Compressor.previewImage(fromFile: url, maxPixel: Self.previewMaxPixel)
+                loadFailed = image == nil
+            }
         case .asset(let asset):
             if asset.mediaType == .video {
                 if let item = await VideoCompressor.playerItem(for: asset) {
+                    guard !Task.isCancelled else { return }
                     player = AVPlayer(playerItem: item); player?.play()
                 } else { loadFailed = true }
             } else {
-                image = await Compressor.previewImage(for: asset, maxPixel: Self.previewMaxPixel)
+                let loaded = await Compressor.previewImage(for: asset, maxPixel: Self.previewMaxPixel)
+                guard !Task.isCancelled else { return }
+                image = loaded
                 if image == nil { loadFailed = true }
             }
         }
