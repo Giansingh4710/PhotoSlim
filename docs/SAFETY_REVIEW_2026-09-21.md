@@ -1,6 +1,6 @@
 # PhotoSlim safety review — September 21, 2026
 
-**Decision: do not merge to main yet.** Code safeguards and automated checks have improved, but the physical-device and failure-injection gates below remain open. This is not a guarantee against every crash or data-loss scenario. Compression is lossy; preserving an encoded copy does not prove it preserves every visual detail or Photos association.
+**Historical September review; see October follow-ups below.** Main was merged and pushed at the user's explicit request on October 9. Physical-device and failure-injection coverage below remains incomplete. This is not a guarantee against every crash or data-loss scenario. Compression is lossy; preserving an encoded copy does not prove it preserves every visual detail or Photos association.
 
 Reviewed the Swift app, project/privacy configuration, recovery store, existing checks, UI tests, and the branch's existing uncommitted safety work. Preserved that work. The branch remains `redesign-unified-compress-flow`; neither local nor remote `main` was changed. No personal photo library, App Store submission, or public website was modified. Simulator deletion tests use generated disposable media, and the test suite refuses to run on physical devices.
 
@@ -48,6 +48,14 @@ xcodebuild -scheme PhotoSlim -configuration Debug \
 ```
 
 ## Required before merge/release
+
+### October 9, 2026 physical follow-up (build 5)
+
+- On an iPhone 16 Pro running iOS 27.2 beta, build 4 opened and compressed a 16.2 MB photo to 1.9 MB. The compressed preview displayed correctly and Keep Both returned to the library. A native screen recording was started and stopped successfully, but it is incomplete review evidence.
+- The physical test exposed long full-screen rescans after library changes. Build 5 reconciles those changes silently, keeping the existing list usable. Initial indexing can still take minutes on a large library.
+- The size filter now filters all measured assets retained in memory when the drag ends, without another Photos scan. New scans use the current threshold when publishing results; permission changes and removals clear/prune the retained items too.
+- Three targeted simulator regressions passed with zero failures: filter high/low without rescanning, Keep Both, and declined deletion. Result: `/tmp/photoslim-review-build5-final.xcresult`. Production safety/encoder/SHA checks and the signed Release archive also passed.
+- Build 5 physical verification and a complete recording remain pending. The earlier six-test suite covers the build 4 baseline; it is not a claim of physical iPad, disk-pressure, or stress testing.
 
 ### October 9, 2026 follow-up (build 4)
 

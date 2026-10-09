@@ -13,6 +13,7 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     var threshold: Int64
 
     var items: [PhotoItem] = []
+    private var scannedItems: [PhotoItem] = []
     private(set) var sortOrder: SortOrder = .size
     var scanProgress: Double = 0
     var isScanning = false
@@ -97,7 +98,7 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         rescanTask = Task {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            await rescan()
+            await rescan(silent: true)
         }
     }
 
@@ -125,13 +126,13 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     func requestAccess() async {
         let previous = authStatus
         authStatus = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
-        if previous != authStatus { hasScanned = false; items = [] }
+        if previous != authStatus { hasScanned = false; scannedItems = []; items = [] }
         if (authStatus == .authorized || authStatus == .limited), !isObservingLibrary {
             PHPhotoLibrary.shared().register(self)
             isObservingLibrary = true
         }
         // The view's .task re-fires on every tab switch — only auto-scan once.
-        // Rescans still happen explicitly via the threshold slider.
+        // Size filtering uses the completed in-memory scan.
         if (authStatus == .authorized || authStatus == .limited) && !hasScanned {
             await scan()
         }
@@ -144,7 +145,9 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     func scan(silent: Bool = false) async {
         guard !isRunningScan else { return }
         authStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard authStatus == .authorized || authStatus == .limited else { items = []; hasScanned = false; return }
+        guard authStatus == .authorized || authStatus == .limited else {
+            scannedItems = []; items = []; hasScanned = false; return
+        }
         isRunningScan = true
         hasScanned = true
         // isScanning drives the "Scanning…" view; a silent reconciling scan leaves it
@@ -154,11 +157,6 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
 
         let assets = fetchAssets()
         let cached = sizeCache.load()
-        // Snapshot the threshold once so a slider change mid-scan can't filter early
-        // items against one value and later items against another. rescan() runs a
-        // fresh pass afterward if the value moved.
-        let cutoff = threshold
-
         var scanned: [PhotoItem] = []
         var freshSizes: [String: Int64] = [:]
         let total = max(assets.count, 1)
@@ -179,21 +177,27 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
                 if size > 0 { freshSizes[key] = size }
             }
 
-            if size >= cutoff {
+            if size > 0 {
                 scanned.append(PhotoItem(asset: asset, byteSize: size))
             }
 
         }
 
-        items = Self.sorted(scanned, by: sortOrder)
+        scannedItems = scanned
+        updateVisibleItems()
         scanProgress = 1
 
         sizeCache.merge(cached, freshSizes, keeping: assets.map(Self.cacheKey))
     }
 
     func remove(ids: Set<String>) {
+        scannedItems.removeAll { ids.contains($0.id) }
         items.removeAll { ids.contains($0.id) }
         sizeCache.forget(ids)
+    }
+
+    func updateVisibleItems() {
+        items = Self.sorted(scannedItems.filter { $0.byteSize >= threshold }, by: sortOrder)
     }
 
     /// Change the sort and re-order the current list in place — no rescan needed.

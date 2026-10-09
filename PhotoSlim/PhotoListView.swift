@@ -203,7 +203,7 @@ struct PhotoListView: View {
             .background(.bar)
     }
 
-    /// Filters the library by minimum item size. Re-scans (cheaply, from cache) on release.
+    /// Filters the completed scan immediately without reading Photos resources again.
     private var thresholdSlider: some View {
         HStack(spacing: 10) {
             Text("≥ \(formatBytes(library.threshold))")
@@ -213,8 +213,9 @@ struct PhotoListView: View {
                 value: thresholdBinding,
                 in: log2(Double(library.minThreshold))...log2(Double(library.maxThreshold))
             ) { editing in
-                if !editing { Task { await library.rescan() } }
+                if !editing { library.updateVisibleItems() }
             }
+            .accessibilityIdentifier("media-size-filter")
         }
     }
 

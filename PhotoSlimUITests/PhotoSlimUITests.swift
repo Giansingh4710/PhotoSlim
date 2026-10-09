@@ -56,6 +56,17 @@ final class PhotoSlimUITests: XCTestCase {
         XCTAssertTrue(app.buttons[reviewedOriginalID].exists)
     }
 
+    func testSizeFilterKeepsScannedItemsAvailable() {
+        let app = launchWithPhotoAccess()
+        let filter = app.sliders["media-size-filter"]
+        XCTAssertTrue(filter.exists)
+        filter.adjust(toNormalizedSliderPosition: 1)
+        XCTAssertFalse(app.staticTexts["Scanning library…"].exists)
+        filter.adjust(toNormalizedSliderPosition: 0)
+        XCTAssertTrue(app.buttons[reviewedOriginalID].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.staticTexts["Scanning library…"].exists)
+    }
+
     func testDecliningDeletionKeepsOriginal() {
         let app = openPhotoReview()
         app.buttons["Delete Original"].tap()

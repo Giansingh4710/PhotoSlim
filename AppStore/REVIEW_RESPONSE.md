@@ -8,7 +8,7 @@ Thank you. PhotoSlim helps iPhone and iPad users identify large supported photos
 
 1. Physical-device recording: [ATTACH RECORDING OF THE SUBMITTED BUILD, AND INSERT FILENAME OR ACCESSIBLE LINK]. The recording begins at app launch and shows the Photos permission request, listing/filtering, preview, quality selection, compression, Keep Both, and a separate deletion-confirmation example using disposable test photos. Include video compression and Slim All if these features are in the submitted build.
 
-2. Physical devices tested: [INSERT ACTUAL MODEL, OS VERSION, BUILD NUMBER AND TEST DATE FOR EACH DEVICE]. An earlier submission reported iPhone 16 Pro / iOS 26.5; re-test the corrected build before listing that as current evidence. iPad is supported and needs physical-device verification too. Use Apple's latest publicly released OS for the recording as requested.
+2. Physical devices tested: [INSERT ACTUAL MODEL, OS VERSION, BUILD NUMBER AND TEST DATE FOR EACH DEVICE]. An earlier submission reported iPhone 16 Pro / iOS 26.5; re-test the corrected build before listing that as current evidence. iPad is supported and needs physical-device verification too. Apple asks for the latest operating system; report any beta version explicitly rather than describing it as a public release.
 
 3. Purpose and audience: PhotoSlim is a storage utility for people managing their own iPhone/iPad photo libraries. It shows supported local media by size and offers smaller copies at a selected quality. Compression may lose detail. Users decide whether to keep originals; space may remain occupied while originals are in Recently Deleted.
 
@@ -24,7 +24,7 @@ Privacy information is accessible inside the app through Privacy & Support. Phot
 
 ## Physical recording checklist
 
-- Record the exact uploaded build on a physical device running the latest public OS. Start with launching PhotoSlim.
+- Record the exact uploaded build on a physical device running the latest operating system. Apple does not explicitly say “public” in its message; report the actual OS and beta status. Start with launching PhotoSlim.
 - Use disposable local test media. If necessary reset only PhotoSlim's photo permission so the recording includes the system permission prompt.
 - Show Selected Photos access working, then Full Access if demonstrating Slim All. Show the filter and empty-state explanation.
 - Preview a photo, select quality, compress it, inspect both previews, and choose Keep Both. Show the saved copy in Photos.
