@@ -1,35 +1,38 @@
-# Guideline 2.1 response — complete evidence before submitting
+# Guideline 2.1 — build 5 review evidence
 
-The user confirmed this is Apple’s latest message. Apple requested information, rather than citing a specific observed defect. The previous response describes a comparison slider and selection-size behavior that are absent from the current app. Use the corrected information below with a recording of the exact submitted build. Do not claim simulator checks are physical-device tests.
+Submitted October 9, 2026 at 11:05 AM EDT. App Store Connect confirmed **Waiting for Review** for version **1.0 (5)**, submission `2540cb91-a4a2-41c2-80cb-8ce656858af1`. The corrected reply and recording were posted in the review thread and the recording is also attached to version review information. Automatic release after approval remains selected.
 
-## Reply / App Review Notes draft
+Confirmation screenshot: `~/Desktop/PhotoSlim-Review-Evidence/App-Store-Waiting-for-Review.png`.
 
-Thank you. PhotoSlim helps iPhone and iPad users identify large supported photos and videos and create smaller, lossy copies locally. Users can review a single copy and keep both versions or explicitly replace the original. Batch replacement requires an upfront choice and iOS deletion confirmation.
+## App Review notes
 
-1. Physical-device recording: [ATTACH RECORDING OF THE SUBMITTED BUILD, AND INSERT FILENAME OR ACCESSIBLE LINK]. The recording begins at app launch and shows the Photos permission request, listing/filtering, preview, quality selection, compression, Keep Both, and a separate deletion-confirmation example using disposable test photos. Include video compression and Slim All if these features are in the submitted build.
+PhotoSlim 1.0 (5) — updated Guideline 2.1 information, October 9, 2026.
 
-2. Physical devices tested: [INSERT ACTUAL MODEL, OS VERSION, BUILD NUMBER AND TEST DATE FOR EACH DEVICE]. An earlier submission reported iPhone 16 Pro / iOS 26.5; re-test the corrected build before listing that as current evidence. iPad is supported and needs physical-device verification too. Apple asks for the latest operating system; report any beta version explicitly rather than describing it as a public release.
+1. RECORDING
+Attached: PhotoSlim-build5-physical-recordings.mp4. It joins two native screen recordings from the same physical iPhone. Part 1 starts in TestFlight showing build 5, launches the app, demonstrates filtering/empty state, photo preview/compression, compressed preview, the iOS deletion prompt (declined), Keep Both, privacy information, unsupported-video refusal, and Slim All setup. Part 2 demonstrates a generated standard H.264/AAC test clip: preview, balanced compression (24.3 MB to 12.1 MB), compressed playback, Keep Both, both copies in the list, and Slim All space checks/cancellation. Photos Full Access was already granted before recording; the initial access prompt is not shown. The deletion permission prompt is shown. No login, purchase, account deletion, or social reporting/blocking flows exist.
 
-3. Purpose and audience: PhotoSlim is a storage utility for people managing their own iPhone/iPad photo libraries. It shows supported local media by size and offers smaller copies at a selected quality. Compression may lose detail. Users decide whether to keep originals; space may remain occupied while originals are in Recently Deleted.
+2. TEST DEVICES
+Physical: iPhone 16 Pro, iOS 27.2 beta (24B5099f), TestFlight 1.0 (5), October 9, 2026. Photo/video compression, previews, Keep Both, declined deletion, filtering, safe refusal and batch preflight/cancellation checked. No whole-library batch was run on this personal device. Additional simulator checks used iPhone 17 Pro / iOS 27.0 and iPad Pro 13-inch (M5) / iPadOS 27.0. No physical iPad was available. Simulator checks are not physical-device tests. Release archive, static analysis, safety/encoder/metadata/SHA checks and three targeted build-5 UI regressions passed.
 
-4. Setup and features: No account, credentials, subscription, or purchase is required. Grant Selected Photos or Full Access for the Photos and Videos tabs. Use disposable, locally downloaded, unedited JPEG/HEIC photos or standard videos. RAW, Live Photos, edited, animated, depth/HDR and other unsupported media are excluded or safely refused. Photos initially show items over 5 MB (adjustable to 500 KB); Videos initially show items over 50 MB (adjustable to 5 MB). Lower the filter if needed. Tap an item to preview it, tap Compress, choose quality, then open Original and Compressed separately to compare. Keep Both saves a copy; Delete Original saves the copy and requests deletion in the same Photos change transaction. Select mode uses batch replacement; it does not open individual review sheets. Slim All requires Full Access for recovery checks, processes supported local media, and pauses/resumes using local recovery records. It skips items that cannot be safely compressed. iOS asks for confirmation before removing originals. Only use disposable media to demonstrate deletion.
+3. PURPOSE AND AUDIENCE
+A storage utility for people managing their own iPhone/iPad photo libraries. It identifies large supported media and creates smaller, lossy copies on-device. Savings vary; users can keep originals and review copies.
 
-5. Services and tools: Native Apple frameworks only: SwiftUI/UIKit, PhotoKit, ImageIO, UniformTypeIdentifiers, and AVFoundation/AVKit. No developer backend, authentication service, analytics, advertising, payment processor, or AI service. Compression takes place on-device. Apple Photos may retrieve previews/originals from the user's iCloud library; saved copies and deletions follow the user's iCloud Photos settings. There is no developer or third-party media upload. Support uses a user-initiated email link. No external donation/payment link remains in this build.
+4. SETUP AND FEATURES
+No account, credentials, subscription or purchase. Grant Selected Photos or Full Access for Photos/Videos; Slim All requires Full Access. Use local, unedited JPEG/HEIC photos or standard SDR videos. RAW, Live Photos, edited, HDR/depth/spatial and other unsupported formats are excluded or refused safely. Lower the size filter if needed (Photos: initially 5 MB, minimum 500 KB; Videos: initially 50 MB, minimum 5 MB). Tap an item, Compress, choose quality, then open Original/Compressed separately. Keep Both saves a copy. Delete Original saves a copy and requests deletion in a Photos transaction. Select mode performs batch replacement. Slim All processes supported local media oldest first, with space checks and pause/resume recovery. iOS confirms deletion. Use disposable media; originals remain in Recently Deleted and deletions sync via iCloud Photos. Do not permanently delete originals before checking saved copies.
 
-6. Regions: No region-specific features, content, pricing, or restrictions are implemented. Functionality is consistent across regions, subject to system Photos permissions and library availability.
+5. SERVICES AND TOOLS
+Native Apple frameworks: SwiftUI/UIKit, PhotoKit, ImageIO, UniformTypeIdentifiers, AVFoundation/AVKit, CryptoKit. No developer backend, account provider, ads, analytics, payment processor, AI service or third-party media upload. Compression is local. Apple Photos may retrieve iCloud originals for previews; copies/deletions follow iCloud settings. Support is user-initiated email. Privacy & Support is available in-app.
 
-7. Regulated services/material: Not applicable. PhotoSlim is a personal media utility, not a regulated service or a provider of licensed third-party media. It processes media selected from the user's own Photos library. There is no public posting, messaging, social feed, or content-sharing service.
+6. REGIONS
+No region-specific features or content restrictions are implemented.
 
-Privacy information is accessible inside the app through Privacy & Support. Photo access is requested to read selected media, show sizes, save smaller copies, and delete originals only at the user's direction.
+7. REGULATED SERVICES / LICENSED MATERIAL
+Not applicable: personal media utility, no regulated service or licensed-content distribution. No public posting, messaging or social feed. Users process their own Photos media.
 
-## Physical recording checklist
+## Evidence provenance
 
-- Record the exact uploaded build on a physical device running the latest operating system. Apple does not explicitly say “public” in its message; report the actual OS and beta status. Start with launching PhotoSlim.
-- Use disposable local test media. If necessary reset only PhotoSlim's photo permission so the recording includes the system permission prompt.
-- Show Selected Photos access working, then Full Access if demonstrating Slim All. Show the filter and empty-state explanation.
-- Preview a photo, select quality, compress it, inspect both previews, and choose Keep Both. Show the saved copy in Photos.
-- With another disposable image, show replacement and the iOS delete prompt. Demonstrate declining once, then accepting if desired. Show that the original is recoverable in Recently Deleted. Do not empty unrelated deleted photos.
-- Show video playback/compression and a small Slim All run, including pause/resume, if shipping those features.
-- No login, purchase, account deletion, reporting/blocking, or tracking flows exist to demonstrate.
-- Attach the actual video in App Store Connect and put the seven completed answers in App Review Notes. Remove all placeholders.
-- Recapture store screenshots from the final UI. Existing screenshot files/claims need review; the app does not have a draggable before/after comparison or a quality slider.
+- Original physical recordings: `~/Downloads/ScreenRecording_10-09-2026 10-39-05_1.MP4` and `~/Downloads/ScreenRecording_10-09-2026 10-54-28_1.MP4`.
+- Upload artifact: `~/Desktop/PhotoSlim-Review-Evidence/PhotoSlim-build5-physical-recordings.mp4`. The two native recordings were resized/transcoded and concatenated; workflow footage was not removed.
+- Photo Library Full Access predated recording. The iOS deletion prompt is included; the initial Photos access prompt is not.
+- No physical iPad or additional physical device was available. No whole-library batch was started on the personal phone.
+- Store assets were replaced with current iPhone/iPad simulator screenshots.
